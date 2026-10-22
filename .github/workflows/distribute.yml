@@ -28,6 +28,10 @@ jobs:
   build:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      winget_manifest: ${{ steps.ingest.outputs.winget_manifest }}
+      winget_id: ${{ steps.ingest.outputs.winget_id }}
+      winget_version: ${{ steps.ingest.outputs.winget_version }}
     permissions:
       contents: write
       pages: read
@@ -44,6 +48,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends apt-utils gnupg
 
       - name: Ingest published release
+        id: ingest
         if: github.event_name != 'push'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -60,6 +65,20 @@ jobs:
               exit 1
             fi
             python3 scripts/distribution.py update "$PACKAGE" "$RELEASE_TAG"
+            python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          from pathlib import Path
+
+          package, tag = os.environ["PACKAGE"], os.environ["RELEASE_TAG"]
+          if Path("releases", package, tag + ".json").is_file():
+              identifier = json.loads(Path("packages.json").read_text())["packages"][package]["winget_id"]
+              version = tag.removeprefix("v")
+              path = Path("winget/manifests", identifier[0].lower(), *identifier.split("."), version)
+              print(f"winget_manifest={path.as_posix()}")
+              print(f"winget_id={identifier}")
+              print(f"winget_version={version}")
+          PY
           fi
 
       - name: Render Homebrew and WinGet metadata
@@ -106,6 +125,36 @@ jobs:
       - uses: actions/upload-pages-artifact@v4
         with:
           path: .site
+
+      - name: Upload WinGet submission
+        if: steps.ingest.outputs.winget_manifest != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: winget-submission
+          path: ${{ steps.ingest.outputs.winget_manifest }}/*.yaml
+          if-no-files-found: error
+
+  winget:
+    name: Submit WinGet PR
+    needs: build
+    if: needs.build.outputs.winget_manifest != ''
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '9.0.x'
+      - uses: actions/download-artifact@v7
+        with:
+          name: winget-submission
+          path: winget-submission
+      - name: Submit manifests to microsoft/winget-pkgs
+        shell: pwsh
+        env:
+          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          PACKAGE_IDENTIFIER: ${{ needs.build.outputs.winget_id }}
+          PACKAGE_VERSION: ${{ needs.build.outputs.winget_version }}
+        run: ./scripts/submit-winget.ps1 -Identifier $env:PACKAGE_IDENTIFIER -Version $env:PACKAGE_VERSION -ManifestPath winget-submission
 
   deploy:
     needs: build
