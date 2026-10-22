@@ -160,7 +160,8 @@ def yaml_text(value, indentation=0):
 
 def write_yaml(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(yaml_text(value)) + "\n")
+    schema = f"https://aka.ms/winget-manifest.{value['ManifestType']}.{value['ManifestVersion']}.schema.json"
+    path.write_text(f"# yaml-language-server: $schema={schema}\n\n" + "\n".join(yaml_text(value)) + "\n")
 
 
 def render(root, configuration):
@@ -216,7 +217,7 @@ def render(root, configuration):
                     "InstallerSha256": release["assets"][filename]["sha256"].upper(),
                 })
             write_yaml(directory / f"{identifier}.installer.yaml", {
-                **common, "InstallerType": "zip", "NestedInstallerType": "portable", "Scope": "user",
+                **common, "InstallerType": "zip", "NestedInstallerType": "portable",
                 "NestedInstallerFiles": [{"RelativeFilePath": package["command"] + ".exe", "PortableCommandAlias": package["command"]}],
                 "Commands": [package["command"]], "UpgradeBehavior": "install", "Installers": installers,
                 "ManifestType": "installer", "ManifestVersion": MANIFEST_VERSION,
