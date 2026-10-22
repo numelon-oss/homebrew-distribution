@@ -1,0 +1,121 @@
+name: Distribution
+
+on:
+  repository_dispatch:
+    types: [release-published]
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Package to update. leave tag empty to rebuild the existing catalogue
+        required: false
+        type: string
+      tag:
+        description: Published stable tag, e.g. v3.2.1
+        required: false
+        type: string
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: read
+
+concurrency:
+  group: distribution
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/configure-pages@v5
+
+      - name: Install APT publication tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends apt-utils gnupg
+
+      - name: Ingest published release
+        if: github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE: ${{ github.event.client_payload.package || inputs.package }}
+          RELEASE_TAG: ${{ github.event.client_payload.tag || inputs.tag }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "repository_dispatch" && ( -z "$PACKAGE" || -z "$RELEASE_TAG" ) ]]; then
+            echo 'Release notifications require both package and tag.' >&2
+            exit 1
+          fi
+          if [[ -n "$RELEASE_TAG" ]]; then
+            if [[ -z "$PACKAGE" ]]; then
+              echo 'Specify a package when supplying a release tag.' >&2
+              exit 1
+            fi
+            python3 scripts/distribution.py update "$PACKAGE" "$RELEASE_TAG"
+          fi
+
+      - name: Render Homebrew and WinGet metadata
+        run: python3 scripts/distribution.py render
+
+      - name: Build APT repository and landing page
+        run: bash scripts/build-apt.sh
+
+      - name: Sign and verify APT catalogue
+        env:
+          APT_SIGNING_PRIVATE_KEY: ${{ secrets.APT_SIGNING_PRIVATE_KEY }}
+          APT_SIGNING_PASSPHRASE: ${{ secrets.APT_SIGNING_PASSPHRASE }}
+          APT_SIGNING_FINGERPRINT: ${{ vars.APT_SIGNING_FINGERPRINT }}
+        run: bash scripts/sign-apt.sh
+
+      - name: Check signed catalogue with APT
+        run: |
+          set -euo pipefail
+          verification_dir=$(mktemp -d)
+          trap 'sudo rm -r -- "$verification_dir"' EXIT
+          chmod 0755 "$verification_dir"
+          mkdir -p "$verification_dir/lists/partial" "$verification_dir/cache/archives/partial"
+          gpg --batch --dearmor --output "$verification_dir/keyring.gpg" public/numelon-oss-gh-archive-keyring.asc
+          chmod 0644 "$verification_dir/keyring.gpg"
+          printf 'deb [signed-by=%s/keyring.gpg] file:%s/.site stable main\n' \
+            "$verification_dir" "$PWD" > "$verification_dir/sources.list"
+          sudo apt-get \
+            -o "Dir::Etc::sourcelist=$verification_dir/sources.list" \
+            -o 'Dir::Etc::sourceparts=-' \
+            -o "Dir::State::lists=$verification_dir/lists" \
+            -o "Dir::Cache=$verification_dir/cache" \
+            update
+
+      - name: Commit package metadata
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add --all -- Formula releases winget
+          if ! git diff --cached --quiet; then
+            git commit -m 'Update published package metadata'
+            git push origin HEAD:main
+          fi
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: .site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment

@@ -1,0 +1,17 @@
+{
+	"apt": {
+		"url": "https://apt-oss-gh.numelon.com"
+	},
+	"packages": {
+		"sklair": {
+			"repository": "numelon-oss/sklair",
+			"homepage": "https://sklair.numelon.com",
+			"description": "HTML compiler for components, Lua, and document generation",
+			"publisher": "Numelon",
+			"publisher_url": "https://opensource.numelon.com",
+			"license": "AGPL-3.0-only",
+			"winget_id": "Numelon.Sklair",
+			"command": "sklair"
+		}
+	}
+}
